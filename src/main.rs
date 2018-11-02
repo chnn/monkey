@@ -1,6 +1,6 @@
 extern crate monkey;
 
-use monkey::{Lexer, Token};
+use monkey::lexer::{Lexer, Token};
 use std::io;
 use std::io::prelude::*;
 
@@ -13,7 +13,7 @@ fn main() {
 
         io::stdin().read_line(&mut input).unwrap();
 
-        let mut lexer = Lexer::new(input);
+        let mut lexer = Lexer::new(&input);
         let mut token = lexer.next_token();
 
         while token != Token::EOF {
