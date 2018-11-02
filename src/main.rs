@@ -1,6 +1,7 @@
 extern crate monkey;
 
-use monkey::{Lexer, Token};
+use monkey::lexer::Lexer;
+use monkey::parser::{ParseError, Parser};
 use std::io;
 use std::io::prelude::*;
 
@@ -13,12 +14,12 @@ fn main() {
 
         io::stdin().read_line(&mut input).unwrap();
 
-        let mut lexer = Lexer::new(input);
-        let mut token = lexer.next_token();
+        let mut lexer = Lexer::new(&input);
+        let mut parser = Parser::new(lexer);
 
-        while token != Token::EOF {
-            println!("{:?}", token);
-            token = lexer.next_token();
+        match parser.parse_program() {
+            Ok(program) => println!("{:?}", program),
+            Err(ParseError { msg }) => println!("error: {}", msg),
         }
     }
 }

@@ -2,7 +2,5 @@
 name = "monkey"
 version = "0.1.0"
 authors = ["Christopher Henn <chris@chrishenn.net>"]
-edition = "2018"
 
 [dependencies]
-lazy_static = "1.1.0"
