@@ -1,51 +1,98 @@
-use super::lexer::{Lexer, Token};
-use std::fmt;
+use std::fmt::{self, Display};
 use std::mem;
 
+use crate::lexer::{Lexer, Token};
+
 #[derive(PartialEq)]
-pub struct Program {
-    statements: Vec<Statement>,
+pub struct File {
+    pub statements: Vec<Stmt>,
 }
 
 #[derive(PartialEq)]
-pub enum Statement {
-    Let { name: String, value: Expression },
-    Return(Expression),
-    Expression(Expression),
+pub enum Stmt {
+    Let(StmtLet),
+    Return(StmtReturn),
+    Expr(StmtExpr),
 }
 
 #[derive(PartialEq)]
-pub enum Expression {
-    Ident(String),
-    Int(i32),
-    Bool(bool),
-    Prefix {
-        op: Operator,
-        right: Box<Expression>,
-    },
-    Infix {
-        op: Operator,
-        left: Box<Expression>,
-        right: Box<Expression>,
-    },
-    If {
-        condition: Box<Expression>,
-        consequence: BlockStatement,
-        alternative: Option<BlockStatement>,
-    },
-    Function {
-        params: Vec<Expression>, // Idents
-        body: BlockStatement,
-    },
-    Call {
-        function: Box<Expression>, // Function or Ident
-        args: Vec<Expression>,
-    },
+pub struct StmtReturn {
+    pub value: Expr,
 }
 
 #[derive(PartialEq)]
-pub struct BlockStatement {
-    statements: Vec<Statement>,
+pub struct StmtLet {
+    pub name: String,
+    pub value: Expr,
+}
+
+#[derive(PartialEq)]
+pub struct StmtExpr {
+    pub value: Expr,
+}
+
+#[derive(PartialEq)]
+pub enum Expr {
+    Ident(ExprIdent),
+    Int(ExprInt),
+    Bool(ExprBool),
+    Prefix(ExprPrefix),
+    Infix(ExprInfix),
+    If(ExprIf),
+    Function(ExprFunction),
+    Call(ExprCall),
+}
+
+#[derive(PartialEq)]
+pub struct ExprIdent {
+    pub value: String,
+}
+
+#[derive(PartialEq)]
+pub struct ExprInt {
+    pub value: i32,
+}
+
+#[derive(PartialEq)]
+pub struct ExprBool {
+    pub value: bool,
+}
+
+#[derive(PartialEq)]
+pub struct ExprPrefix {
+    pub op: Operator,
+    pub right: Box<Expr>,
+}
+
+#[derive(PartialEq)]
+pub struct ExprInfix {
+    pub op: Operator,
+    pub left: Box<Expr>,
+    pub right: Box<Expr>,
+}
+
+#[derive(PartialEq)]
+pub struct ExprIf {
+    pub condition: Box<Expr>,
+    pub consequence: Block,
+    pub alternative: Option<Block>,
+}
+
+#[derive(PartialEq)]
+pub struct ExprFunction {
+    pub params: Vec<ExprIdent>, // Idents
+    pub body: Block,
+}
+
+#[derive(PartialEq)]
+pub struct ExprCall {
+    pub function: Box<Expr>, // Function or Ident
+    pub args: Vec<Expr>,
+}
+
+#[derive(PartialEq)]
+pub struct Block {
+    pub statements: Vec<Stmt>,
 }
 
 #[derive(PartialEq)]
@@ -106,14 +153,24 @@ impl Precedence {
     }
 }
 
+pub type Result<T> = std::result::Result<T, Error>;
+
 #[derive(Debug)]
-pub struct ParseError {
-    pub msg: String,
+pub struct Error {
+    message: String,
 }
 
-impl ParseError {
-    fn new(msg: &str) -> ParseError {
-        ParseError { msg: msg.to_string() }
+impl Error {
+    fn new<T: Display>(message: T) -> Self {
+        Error {
+            message: message.to_string(),
+        }
+    }
+}
+
+impl Display for Error {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.message)
     }
 }
 
@@ -125,66 +182,67 @@ pub struct Parser {
 impl Parser {
     pub fn new(lexer: Lexer) -> Parser {
         Parser {
-            // TODO: Iterate lazily over (current, next) tuples instead
             tokens: lexer.collect(),
             i: 0,
         }
     }
 
-    pub fn parse_program(&mut self) -> Result<Program, ParseError> {
-        let mut statements: Vec<Statement> = Vec::new();
+    pub fn parse_file(&mut self) -> Result<File> {
+        let mut statements: Vec<Stmt> = Vec::new();
 
         while self.has_token() {
-            statements.push(self.parse_statement()?);
+            statements.push(self.parse_stmt()?);
             self.next_token();
         }
 
-        Ok(Program { statements })
+        Ok(File { statements })
     }
 
-    fn parse_statement(&mut self) -> Result<Statement, ParseError> {
-        match self.cur_token() {
-            Token::Let => self.parse_let_statement(),
-            Token::Return => self.parse_return_statement(),
-            _ => self.parse_expression_statement(),
-        }
+    fn parse_stmt(&mut self) -> Result<Stmt> {
+        let stmt = match self.cur_token() {
+            Token::Let => Stmt::Let(self.parse_stmt_let()?),
+            Token::Return => Stmt::Return(self.parse_stmt_return()?),
+            _ => Stmt::Expr(self.parse_stmt_expr()?),
+        };
+
+        Ok(stmt)
     }
 
-    fn parse_let_statement(&mut self) -> Result<Statement, ParseError> {
+    fn parse_stmt_let(&mut self) -> Result<StmtLet> {
         self.next_token();
 
         let name: String = match self.cur_token() {
             Token::Ident(ident) => ident.to_owned(),
-            _ => return Err(ParseError::new("expected ident")),
+            _ => return Err(Error::new("expected ident")),
         };
 
         self.expect_peek(&Token::Assign)?;
         self.next_token();
 
-        let expr = self.parse_expression(Precedence::Lowest)?;
+        let expr = self.parse_expr(Precedence::Lowest)?;
 
         if let Token::Semicolon = self.peek_token() {
             self.next_token();
         }
 
-        Ok(Statement::Let { name, value: expr })
+        Ok(StmtLet { name, value: expr })
     }
 
-    fn parse_return_statement(&mut self) -> Result<Statement, ParseError> {
+    fn parse_stmt_return(&mut self) -> Result<StmtReturn> {
         self.next_token();
 
-        let expr = self.parse_expression(Precedence::Lowest)?;
+        let value = self.parse_expr(Precedence::Lowest)?;
 
         if let Token::Semicolon = self.peek_token() {
             self.next_token();
         }
 
-        Ok(Statement::Return(expr))
+        Ok(StmtReturn { value })
     }
 
-    fn parse_expression_statement(&mut self) -> Result<Statement, ParseError> {
-        let expression = self.parse_expression(Precedence::Lowest)?;
-        let statement = Statement::Expression(expression);
+    fn parse_stmt_expr(&mut self) -> Result<StmtExpr> {
+        let value = self.parse_expr(Precedence::Lowest)?;
+        let statement = StmtExpr { value };
 
         if let Token::Semicolon = self.peek_token() {
             self.next_token();
@@ -193,21 +251,23 @@ impl Parser {
         Ok(statement)
     }
 
-    fn parse_expression(&mut self, prec: Precedence) -> Result<Expression, ParseError> {
+    fn parse_expr(&mut self, prec: Precedence) -> Result<Expr> {
         let mut left = match self.cur_token() {
-            Token::Bang => self.parse_prefix_expression()?,
-            Token::Minus => self.parse_prefix_expression()?,
-            Token::LParen => self.parse_grouped_expression()?,
-            Token::If => self.parse_if_expression()?,
-            Token::Function => self.parse_fn_expression()?,
-            Token::Ident(value) => Expression::Ident(value.to_owned()),
-            Token::True => Expression::Bool(true),
-            Token::False => Expression::Bool(false),
-            Token::Int(n) => Expression::Int(*n),
+            Token::Bang => Expr::Prefix(self.parse_expr_prefix()?),
+            Token::Minus => Expr::Prefix(self.parse_expr_prefix()?),
+            Token::LParen => self.parse_grouped_expr()?,
+            Token::If => Expr::If(self.parse_expr_if()?),
+            Token::Function => Expr::Function(self.parse_expr_function()?),
+            Token::Ident(value) => Expr::Ident(ExprIdent {
+                value: value.to_owned(),
+            }),
+            Token::True => Expr::Bool(ExprBool { value: true }),
+            Token::False => Expr::Bool(ExprBool { value: false }),
+            Token::Int(n) => Expr::Int(ExprInt { value: *n }),
             x => {
                 let msg = format!("no prefix parse function implemented for `{:?}`", x);
 
-                return Err(ParseError::new(&msg));
+                return Err(Error::new(&msg));
             }
         };
 
@@ -230,11 +290,11 @@ impl Parser {
                 | Token::MoreThan
                 | Token::LessThan => {
                     self.next_token();
-                    self.parse_infix_expression(left)?
+                    Expr::Infix(self.parse_expr_infix(left)?)
                 }
                 Token::LParen => {
                     self.next_token();
-                    self.parse_call_expression(left)?
+                    Expr::Call(self.parse_expr_call(left)?)
                 }
                 _ => {
                     return Ok(left);
@@ -245,74 +305,74 @@ impl Parser {
         Ok(left)
     }
 
-    fn parse_prefix_expression(&mut self) -> Result<Expression, ParseError> {
+    fn parse_expr_prefix(&mut self) -> Result<ExprPrefix> {
         let op = Operator::from(self.cur_token());
 
         self.next_token();
 
-        let right = self.parse_expression(Precedence::Prefix)?;
+        let right = self.parse_expr(Precedence::Prefix)?;
 
-        Ok(Expression::Prefix {
+        Ok(ExprPrefix {
             op,
             right: Box::new(right),
         })
     }
 
-    fn parse_infix_expression(&mut self, left: Expression) -> Result<Expression, ParseError> {
+    fn parse_expr_infix(&mut self, left: Expr) -> Result<ExprInfix> {
         let op = Operator::from(self.cur_token());
         let precedence = self.cur_precedence();
 
         self.next_token();
 
-        let right = self.parse_expression(precedence)?;
+        let right = self.parse_expr(precedence)?;
 
-        Ok(Expression::Infix {
+        Ok(ExprInfix {
             op,
             left: Box::new(left),
             right: Box::new(right),
         })
     }
 
-    fn parse_grouped_expression(&mut self) -> Result<Expression, ParseError> {
+    fn parse_grouped_expr(&mut self) -> Result<Expr> {
         self.next_token();
 
-        let expr = self.parse_expression(Precedence::Lowest);
+        let expr = self.parse_expr(Precedence::Lowest);
 
         self.expect_peek(&Token::RParen)?;
 
         expr
     }
 
-    fn parse_if_expression(&mut self) -> Result<Expression, ParseError> {
+    fn parse_expr_if(&mut self) -> Result<ExprIf> {
         self.expect_peek(&Token::LParen)?;
         self.next_token();
 
-        let condition = self.parse_expression(Precedence::Lowest)?;
+        let condition = self.parse_expr(Precedence::Lowest)?;
 
         self.expect_peek(&Token::RParen)?;
         self.expect_peek(&Token::LBrace)?;
 
-        let consequence = self.parse_block_statement()?;
+        let consequence = self.parse_block()?;
 
-        let mut alternative: Option<BlockStatement> = None;
+        let mut alternative: Option<Block> = None;
 
         if self.expect_peek(&Token::Else).is_ok() {
             self.expect_peek(&Token::LBrace)?;
 
-            alternative = Some(self.parse_block_statement()?);
+            alternative = Some(self.parse_block()?);
         }
 
-        Ok(Expression::If {
+        Ok(ExprIf {
             condition: Box::new(condition),
             consequence,
             alternative,
         })
     }
 
-    fn parse_block_statement(&mut self) -> Result<BlockStatement, ParseError> {
+    fn parse_block(&mut self) -> Result<Block> {
         self.next_token();
 
-        let mut statements: Vec<Statement> = Vec::new();
+        let mut statements: Vec<Stmt> = Vec::new();
 
         loop {
             if !self.has_token() {
@@ -323,27 +383,27 @@ impl Parser {
                 break;
             }
 
-            statements.push(self.parse_statement()?);
+            statements.push(self.parse_stmt()?);
             self.next_token();
         }
 
-        Ok(BlockStatement { statements })
+        Ok(Block { statements })
     }
 
-    fn parse_fn_expression(&mut self) -> Result<Expression, ParseError> {
+    fn parse_expr_function(&mut self) -> Result<ExprFunction> {
         self.expect_peek(&Token::LParen)?;
 
-        let params = self.parse_fn_params()?;
+        let params = self.parse_expr_function_params()?;
 
         self.expect_peek(&Token::LBrace)?;
 
-        let body = self.parse_block_statement()?;
+        let body = self.parse_block()?;
 
-        Ok(Expression::Function { params, body })
+        Ok(ExprFunction { params, body })
     }
 
-    fn parse_fn_params(&mut self) -> Result<Vec<Expression>, ParseError> {
-        let mut idents: Vec<Expression> = Vec::new();
+    fn parse_expr_function_params(&mut self) -> Result<Vec<ExprIdent>> {
+        let mut idents: Vec<ExprIdent> = Vec::new();
 
         if self.expect_peek(&Token::RParen).is_ok() {
             return Ok(idents);
@@ -353,10 +413,10 @@ impl Parser {
 
         let ident = match self.cur_token() {
             Token::Ident(ident) => ident.to_owned(),
-            _ => return Err(ParseError::new("expected ident")),
+            _ => return Err(Error::new("expected ident")),
         };
 
-        idents.push(Expression::Ident(ident));
+        idents.push(ExprIdent { value: ident });
 
         while let Token::Comma = self.peek_token() {
             self.next_token();
@@ -364,10 +424,10 @@ impl Parser {
 
             let ident = match self.cur_token() {
                 Token::Ident(ident) => ident.to_owned(),
-                _ => return Err(ParseError::new("expected ident")),
+                _ => return Err(Error::new("expected ident")),
             };
 
-            idents.push(Expression::Ident(ident));
+            idents.push(ExprIdent { value: ident });
         }
 
         self.expect_peek(&Token::RParen)?;
@@ -375,29 +435,29 @@ impl Parser {
         Ok(idents)
     }
 
-    fn parse_call_expression(&mut self, function: Expression) -> Result<Expression, ParseError> {
-        let args = self.parse_call_arguments()?;
+    fn parse_expr_call(&mut self, function: Expr) -> Result<ExprCall> {
+        let args = self.parse_expr_call_args()?;
 
-        Ok(Expression::Call {
+        Ok(ExprCall {
             function: Box::new(function),
             args,
         })
     }
 
-    fn parse_call_arguments(&mut self) -> Result<Vec<Expression>, ParseError> {
-        let mut args: Vec<Expression> = Vec::new();
+    fn parse_expr_call_args(&mut self) -> Result<Vec<Expr>> {
+        let mut args: Vec<Expr> = Vec::new();
 
         if self.expect_peek(&Token::RParen).is_ok() {
             return Ok(args);
         };
 
         self.next_token();
-        args.push(self.parse_expression(Precedence::Lowest)?);
+        args.push(self.parse_expr(Precedence::Lowest)?);
 
         while let Token::Comma = self.peek_token() {
             self.next_token();
             self.next_token();
-            args.push(self.parse_expression(Precedence::Lowest)?);
+            args.push(self.parse_expr(Precedence::Lowest)?);
         }
 
         self.expect_peek(&Token::RParen)?;
@@ -421,14 +481,14 @@ impl Parser {
         self.i += 1;
     }
 
-    fn expect_peek(&mut self, token: &Token) -> Result<(), ParseError> {
+    fn expect_peek(&mut self, token: &Token) -> Result<()> {
         if mem::discriminant(self.peek_token()) == mem::discriminant(token) {
             self.next_token();
             Ok(())
         } else {
             let msg = format!("expected token `{:?}` but found `{:?}`", token, self.peek_token());
 
-            Err(ParseError::new(&msg))
+            Err(Error::new(&msg))
         }
     }
 
@@ -441,8 +501,8 @@ impl Parser {
     }
 }
 
-impl fmt::Debug for Program {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+impl fmt::Debug for File {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let output = self
             .statements
             .iter()
@@ -452,36 +512,36 @@ impl fmt::Debug for Program {
     }
 }
 
-impl fmt::Debug for Statement {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+impl fmt::Debug for Stmt {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Statement::Let { name, value } => write!(f, "let {} = {:?};", name, value),
-            Statement::Return(expr) => write!(f, "return {:?};", expr),
-            Statement::Expression(expr) => write!(f, "{:?};", expr),
+            Stmt::Let(StmtLet { name, value }) => write!(f, "let {} = {:?};", name, value),
+            Stmt::Return(StmtReturn { value }) => write!(f, "return {:?};", value),
+            Stmt::Expr(StmtExpr { value }) => write!(f, "{:?};", value),
         }
     }
 }
 
-impl fmt::Debug for Expression {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+impl fmt::Debug for Expr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Expression::Ident(x) => write!(f, "{}", x),
-            Expression::Int(x) => write!(f, "{}", x),
-            Expression::Bool(x) => write!(f, "{}", x),
-            Expression::Prefix { op, right } => write!(f, "({:?}{:?})", op, right),
-            Expression::Infix { op, left, right } => write!(f, "({:?} {:?} {:?})", left, op, right),
-            Expression::If {
+            Expr::Ident(ExprIdent { value }) => write!(f, "{}", value),
+            Expr::Int(ExprInt { value }) => write!(f, "{}", value),
+            Expr::Bool(ExprBool { value }) => write!(f, "{}", value),
+            Expr::Prefix(ExprPrefix { op, right }) => write!(f, "({:?}{:?})", op, right),
+            Expr::Infix(ExprInfix { op, left, right }) => write!(f, "({:?} {:?} {:?})", left, op, right),
+            Expr::If(ExprIf {
                 condition,
                 consequence,
                 alternative,
-            } => {
+            }) => {
                 if let Some(alt) = alternative {
                     write!(f, "if {:?} then {:?} else {:?}", condition, consequence, alt)
                 } else {
                     write!(f, "if {:?} then {:?}", condition, consequence)
                 }
             }
-            Expression::Function { params, body } => {
+            Expr::Function(ExprFunction { params, body }) => {
                 let params_list: String = params
                     .iter()
                     .map(|expr| format!("{:?}", expr))
@@ -490,7 +550,7 @@ impl fmt::Debug for Expression {
 
                 write!(f, "fn({}) {:?}", params_list, body)
             }
-            Expression::Call { function, args } => {
+            Expr::Call(ExprCall { function, args }) => {
                 let args_list: String = args
                     .iter()
                     .map(|expr| format!("{:?}", expr))
@@ -503,8 +563,14 @@ impl fmt::Debug for Expression {
     }
 }
 
-impl fmt::Debug for BlockStatement {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+impl fmt::Debug for ExprIdent {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.value)
+    }
+}
+
+impl fmt::Debug for Block {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let output = self
             .statements
             .iter()
@@ -515,7 +581,7 @@ impl fmt::Debug for BlockStatement {
 }
 
 impl fmt::Debug for Operator {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Operator::Bang => f.write_str("!"),
             Operator::Minus => f.write_str("-"),
@@ -545,24 +611,24 @@ let foobar = 838383;
         let lexer = Lexer::new(input);
         let mut parser = Parser::new(lexer);
 
-        let expected = Program {
+        let expected = File {
             statements: vec![
-                Statement::Let {
+                Stmt::Let(StmtLet {
                     name: "x".to_string(),
-                    value: Expression::Int(5),
-                },
-                Statement::Let {
+                    value: Expr::Int(ExprInt { value: 5 }),
+                }),
+                Stmt::Let(StmtLet {
                     name: "y".to_string(),
-                    value: Expression::Int(10),
-                },
-                Statement::Let {
+                    value: Expr::Int(ExprInt { value: 10 }),
+                }),
+                Stmt::Let(StmtLet {
                     name: "foobar".to_string(),
-                    value: Expression::Int(838383),
-                },
+                    value: Expr::Int(ExprInt { value: 838383 }),
+                }),
             ],
         };
 
-        let actual = parser.parse_program().unwrap();
+        let actual = parser.parse_file().unwrap();
 
         assert_eq!(actual, expected);
     }
@@ -583,7 +649,7 @@ let foobar = 838383;
 let y = 10;
 let foobar = 838383;";
 
-        let actual = format!("{:?}", parser.parse_program().unwrap());
+        let actual = format!("{:?}", parser.parse_file().unwrap());
 
         assert_eq!(actual, expected);
     }
@@ -599,15 +665,21 @@ return 993322;
         let lexer = Lexer::new(input);
         let mut parser = Parser::new(lexer);
 
-        let expected = Program {
+        let expected = File {
             statements: vec![
-                Statement::Return(Expression::Int(5)),
-                Statement::Return(Expression::Int(10)),
-                Statement::Return(Expression::Int(993322)),
+                Stmt::Return(StmtReturn {
+                    value: Expr::Int(ExprInt { value: 5 }),
+                }),
+                Stmt::Return(StmtReturn {
+                    value: Expr::Int(ExprInt { value: 10 }),
+                }),
+                Stmt::Return(StmtReturn {
+                    value: Expr::Int(ExprInt { value: 993322 }),
+                }),
             ],
         };
 
-        let actual = parser.parse_program().unwrap();
+        let actual = parser.parse_file().unwrap();
 
         assert_eq!(actual, expected);
     }
@@ -619,11 +691,15 @@ return 993322;
         let lexer = Lexer::new(input);
         let mut parser = Parser::new(lexer);
 
-        let expected = Program {
-            statements: vec![Statement::Expression(Expression::Ident("foobar".to_string()))],
+        let expected = File {
+            statements: vec![Stmt::Expr(StmtExpr {
+                value: Expr::Ident(ExprIdent {
+                    value: "foobar".to_string(),
+                }),
+            })],
         };
 
-        let actual = parser.parse_program().unwrap();
+        let actual = parser.parse_file().unwrap();
 
         assert_eq!(actual, expected);
     }
@@ -635,11 +711,13 @@ return 993322;
         let lexer = Lexer::new(input);
         let mut parser = Parser::new(lexer);
 
-        let expected = Program {
-            statements: vec![Statement::Expression(Expression::Int(5))],
+        let expected = File {
+            statements: vec![Stmt::Expr(StmtExpr {
+                value: Expr::Int(ExprInt { value: (5) }),
+            })],
         };
 
-        let actual = parser.parse_program().unwrap();
+        let actual = parser.parse_file().unwrap();
 
         assert_eq!(actual, expected);
     }
@@ -651,11 +729,13 @@ return 993322;
         let lexer = Lexer::new(input);
         let mut parser = Parser::new(lexer);
 
-        let expected = Program {
-            statements: vec![Statement::Expression(Expression::Bool(true))],
+        let expected = File {
+            statements: vec![Stmt::Expr(StmtExpr {
+                value: Expr::Bool(ExprBool { value: true }),
+            })],
         };
 
-        let actual = parser.parse_program().unwrap();
+        let actual = parser.parse_file().unwrap();
 
         assert_eq!(actual, expected);
     }
@@ -665,29 +745,29 @@ return 993322;
         struct Test {
             input: &'static str,
             op: Operator,
-            right: Expression,
+            right: Expr,
         }
 
         let tests = vec![
             Test {
                 input: "!5;",
                 op: Operator::Bang,
-                right: Expression::Int(5),
+                right: Expr::Int(ExprInt { value: 5 }),
             },
             Test {
                 input: "!true;",
                 op: Operator::Bang,
-                right: Expression::Bool(true),
+                right: Expr::Bool(ExprBool { value: true }),
             },
             Test {
                 input: "!false;",
                 op: Operator::Bang,
-                right: Expression::Bool(false),
+                right: Expr::Bool(ExprBool { value: false }),
             },
             Test {
                 input: "-15;",
                 op: Operator::Minus,
-                right: Expression::Int(15),
+                right: Expr::Int(ExprInt { value: 15 }),
             },
         ];
 
@@ -695,9 +775,12 @@ return 993322;
             let lexer = Lexer::new(test.input);
             let mut parser = Parser::new(lexer);
 
-            let stmt = &parser.parse_program().unwrap().statements[0];
+            let stmt = &parser.parse_file().unwrap().statements[0];
 
-            if let Statement::Expression(Expression::Prefix { op, right }) = stmt {
+            if let Stmt::Expr(StmtExpr {
+                value: Expr::Prefix(ExprPrefix { op, right }),
+            }) = stmt
+            {
                 assert_eq!(*op, test.op);
                 assert_eq!(**right, test.right);
             } else {
@@ -711,58 +794,58 @@ return 993322;
         struct Test {
             input: &'static str,
             op: Operator,
-            left: Expression,
-            right: Expression,
+            left: Expr,
+            right: Expr,
         }
 
         let tests = vec![
             Test {
                 input: "5 + 5;",
                 op: Operator::Plus,
-                left: Expression::Int(5),
-                right: Expression::Int(5),
+                left: Expr::Int(ExprInt { value: 5 }),
+                right: Expr::Int(ExprInt { value: 5 }),
             },
             Test {
                 input: "5 - 5;",
                 op: Operator::Minus,
-                left: Expression::Int(5),
-                right: Expression::Int(5),
+                left: Expr::Int(ExprInt { value: 5 }),
+                right: Expr::Int(ExprInt { value: 5 }),
             },
             Test {
                 input: "5 * 5;",
                 op: Operator::Times,
-                left: Expression::Int(5),
-                right: Expression::Int(5),
+                left: Expr::Int(ExprInt { value: 5 }),
+                right: Expr::Int(ExprInt { value: 5 }),
             },
             Test {
                 input: "5 / 5;",
                 op: Operator::Divide,
-                left: Expression::Int(5),
-                right: Expression::Int(5),
+                left: Expr::Int(ExprInt { value: 5 }),
+                right: Expr::Int(ExprInt { value: 5 }),
             },
             Test {
                 input: "5 > 5;",
                 op: Operator::MoreThan,
-                left: Expression::Int(5),
-                right: Expression::Int(5),
+                left: Expr::Int(ExprInt { value: 5 }),
+                right: Expr::Int(ExprInt { value: 5 }),
             },
             Test {
                 input: "5 < 5;",
                 op: Operator::LessThan,
-                left: Expression::Int(5),
-                right: Expression::Int(5),
+                left: Expr::Int(ExprInt { value: 5 }),
+                right: Expr::Int(ExprInt { value: 5 }),
             },
             Test {
                 input: "5 == 5;",
                 op: Operator::Equal,
-                left: Expression::Int(5),
-                right: Expression::Int(5),
+                left: Expr::Int(ExprInt { value: 5 }),
+                right: Expr::Int(ExprInt { value: 5 }),
             },
             Test {
                 input: "5 != 5;",
                 op: Operator::NotEqual,
-                left: Expression::Int(5),
-                right: Expression::Int(5),
+                left: Expr::Int(ExprInt { value: 5 }),
+                right: Expr::Int(ExprInt { value: 5 }),
             },
         ];
 
@@ -770,9 +853,12 @@ return 993322;
             let lexer = Lexer::new(test.input);
             let mut parser = Parser::new(lexer);
 
-            let stmt = &parser.parse_program().unwrap().statements[0];
+            let stmt = &parser.parse_file().unwrap().statements[0];
 
-            if let Statement::Expression(Expression::Infix { op, left, right }) = stmt {
+            if let Stmt::Expr(StmtExpr {
+                value: Expr::Infix(ExprInfix { op, left, right }),
+            }) = stmt
+            {
                 assert_eq!(*op, test.op);
                 assert_eq!(**left, test.left);
                 assert_eq!(**right, test.right);
@@ -812,7 +898,7 @@ return 993322;
             let lexer = Lexer::new(input);
             let mut parser = Parser::new(lexer);
 
-            let actual = format!("{:?}", parser.parse_program().unwrap());
+            let actual = format!("{:?}", parser.parse_file().unwrap());
 
             assert_eq!(actual, expected);
         }
@@ -825,21 +911,25 @@ return 993322;
         let lexer = Lexer::new(input);
         let mut parser = Parser::new(lexer);
 
-        let expected = Program {
-            statements: vec![Statement::Expression(Expression::If {
-                condition: Box::new(Expression::Infix {
-                    op: Operator::LessThan,
-                    left: Box::new(Expression::Ident("x".to_string())),
-                    right: Box::new(Expression::Ident("y".to_string())),
+        let expected = File {
+            statements: vec![Stmt::Expr(StmtExpr {
+                value: Expr::If(ExprIf {
+                    condition: Box::new(Expr::Infix(ExprInfix {
+                        op: Operator::LessThan,
+                        left: Box::new(Expr::Ident(ExprIdent { value: "x".to_string() })),
+                        right: Box::new(Expr::Ident(ExprIdent { value: "y".to_string() })),
+                    })),
+                    consequence: Block {
+                        statements: vec![Stmt::Expr(StmtExpr {
+                            value: Expr::Ident(ExprIdent { value: "x".to_string() }),
+                        })],
+                    },
+                    alternative: None,
                 }),
-                consequence: BlockStatement {
-                    statements: vec![Statement::Expression(Expression::Ident("x".to_string()))],
-                },
-                alternative: None,
             })],
         };
 
-        let actual = parser.parse_program().unwrap();
+        let actual = parser.parse_file().unwrap();
 
         assert_eq!(actual, expected);
     }
@@ -851,23 +941,29 @@ return 993322;
         let lexer = Lexer::new(input);
         let mut parser = Parser::new(lexer);
 
-        let expected = Program {
-            statements: vec![Statement::Expression(Expression::If {
-                condition: Box::new(Expression::Infix {
-                    op: Operator::LessThan,
-                    left: Box::new(Expression::Ident("x".to_string())),
-                    right: Box::new(Expression::Ident("y".to_string())),
-                }),
-                consequence: BlockStatement {
-                    statements: vec![Statement::Expression(Expression::Ident("x".to_string()))],
-                },
-                alternative: Some(BlockStatement {
-                    statements: vec![Statement::Expression(Expression::Ident("y".to_string()))],
+        let expected = File {
+            statements: vec![Stmt::Expr(StmtExpr {
+                value: Expr::If(ExprIf {
+                    condition: Box::new(Expr::Infix(ExprInfix {
+                        op: Operator::LessThan,
+                        left: Box::new(Expr::Ident(ExprIdent { value: "x".to_string() })),
+                        right: Box::new(Expr::Ident(ExprIdent { value: "y".to_string() })),
+                    })),
+                    consequence: Block {
+                        statements: vec![Stmt::Expr(StmtExpr {
+                            value: Expr::Ident(ExprIdent { value: "x".to_string() }),
+                        })],
+                    },
+                    alternative: Some(Block {
+                        statements: vec![Stmt::Expr(StmtExpr {
+                            value: Expr::Ident(ExprIdent { value: "y".to_string() }),
+                        })],
+                    }),
                 }),
             })],
         };
 
-        let actual = parser.parse_program().unwrap();
+        let actual = parser.parse_file().unwrap();
 
         assert_eq!(actual, expected);
     }
@@ -884,7 +980,7 @@ fn(x, y) {
         let mut parser = Parser::new(lexer);
 
         let expected = "fn(x, y) { (x + y); };";
-        let actual = format!("{:?}", parser.parse_program().unwrap());
+        let actual = format!("{:?}", parser.parse_file().unwrap());
 
         assert_eq!(actual, expected);
     }
@@ -896,14 +992,18 @@ fn(x, y) {
         let lexer = Lexer::new(input);
         let mut parser = Parser::new(lexer);
 
-        let expected = Program {
-            statements: vec![Statement::Expression(Expression::Call {
-                function: Box::new(Expression::Ident("add".to_string())),
-                args: vec![Expression::Int(1), Expression::Int(2)],
+        let expected = File {
+            statements: vec![Stmt::Expr(StmtExpr {
+                value: Expr::Call(ExprCall {
+                    function: Box::new(Expr::Ident(ExprIdent {
+                        value: "add".to_string(),
+                    })),
+                    args: vec![Expr::Int(ExprInt { value: 1 }), Expr::Int(ExprInt { value: 2 })],
+                }),
             })],
         };
 
-        let actual = parser.parse_program().unwrap();
+        let actual = parser.parse_file().unwrap();
 
         assert_eq!(actual, expected);
     }
