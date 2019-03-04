@@ -2,9 +2,16 @@ use super::lexer::{Lexer, Token};
 use std::fmt;
 use std::mem;
 
+pub enum Node {
+    Program(Program),
+    Statement(Statement),
+    BlockStatement(BlockStatement),
+    Expression(Expression)
+}
+
 #[derive(PartialEq)]
 pub struct Program {
-    statements: Vec<Statement>,
+    pub statements: Vec<Statement>,
 }
 
 #[derive(PartialEq)]
